@@ -55,22 +55,17 @@ function getRawBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
 
-        // 1. 监听 'error' 事件，处理连接错误
         req.on('error', (err) => {
             reject(err);
         });
 
-        // 2. 监听 'data' 事件，收集数据块
         req.on('data', (chunk) => {
             chunks.push(chunk);
         });
 
-        // 3. 监听 'end' 事件，表示数据接收完毕
         req.on('end', () => {
-            // 将所有 Buffer 块拼接成一个 Buffer
             const rawBodyBuffer = Buffer.concat(chunks);
 
-            // 默认解码为 UTF-8 字符串
             const rawBodyString = rawBodyBuffer.toString('utf8');
 
             resolve(rawBodyString);
@@ -78,8 +73,7 @@ function getRawBody(req) {
     });
 }
 
-// The makeArgs function is now passed to the router, keeping index.js clean.
-const makeArgs = (params) => async (req, res, routeParams) => {
+const makeArgs = (params) => async (ctx, req, res, routeParams) => {
     const args = [];
     for (const param of params) {
         if (param === 'req') args.push(req);
@@ -97,30 +91,77 @@ const makeArgs = (params) => async (req, res, routeParams) => {
             const paths = req.url.split('/');
             args.push(paths[paths.length - 1]);
         } else if (param === 'params') args.push(routeParams);
+        else if (param === 'ctx') args.push(ctx);
+        else if (param === 'handler') args.push(ctx);
+        else if (param === 'middleware') args.push(ctx);
         else args.push(null);
     }
     return args;
 };
 
-const loadRoutesFromControllers = (router, controllers) => {
-    const loadHandler = (controller, parentPaths, path) => {
-        const handleFn = controller[path];
-        if (typeof handleFn === 'function') {
-            let handler = { fn: handleFn, args: makeArgs(getFunctionParams(handleFn)) };
-            let tmpRouter = router.root;
-            const fullPathSegments = [...parentPaths, path].filter(Boolean);
+const loadHandlerFn = (handler, handleFn) => {
+    const params = getFunctionParams(handleFn);
+    const args = makeArgs(params);
 
+    const isMiddleware = params.find(e => e === 'middleware');
+
+    if (isMiddleware) {
+        if (!handler.fn) {
+            if (!handler.beforeMiddleware) {
+                handler.beforeMiddleware = []
+            }
+            handler.beforeMiddleware.push({ fn: handleFn, args });
+        } else {
+            if (!handler.afterMiddleware) {
+                handler.afterMiddleware = []
+            }
+            handler.afterMiddleware.push({ fn: handleFn, args });
+        }
+    } else {
+        if (handler.fn) {
+            throw new Error('handler.fn already exist');
+        }
+
+        handler.fn = handleFn;
+        handler.args = args;
+    }
+
+    return handler;
+}
+
+const loadRoutesFromControllers = (router, controllers) => {
+    const loadHandler = (handleFn, parentPaths) => {
+        let handler = {};
+
+        const fullPathSegments = parentPaths.filter(Boolean);
+
+        if (Array.isArray(handleFn)) {
+            for (const fn of handleFn) {
+                loadHandlerFn(handler, fn)
+            }
+        } else if (typeof handleFn === 'function') {
+            loadHandlerFn(handler, handleFn)
+        } else if (typeof handleFn === 'object' && handleFn !== null) {
+            for (const key in handleFn) {
+                loadHandler(handleFn[key], [...parentPaths, key]);
+            }
+        }
+
+        if (handler.fn) {
+            let tmpRouter = router.root;
             for (const segment of fullPathSegments) {
-                let child = tmpRouter.children.get(segment);
-                if (!child) {
-                    child = createNode();
-                    tmpRouter.children.set(segment, child);
-                    if (isSourceRegexLiteral(segment)) {
-                        child.mode = 'regex';
-                        child.regex = segment;
+                if (segment !== 'index') {
+                    let child = tmpRouter.children.get(segment);
+                    if (!child) {
+                        child = createNode();
+                        tmpRouter.children.set(segment, child);
+                        if (isSourceRegexLiteral(segment)) {
+                            child.mode = 'regex';
+                            child.regex = segment;
+                        }
                     }
+                    tmpRouter = child;
                 }
-                tmpRouter = child;
             }
             if (!tmpRouter.mode) tmpRouter.mode = 'static';
             tmpRouter.handler = handler;
@@ -131,11 +172,7 @@ const loadRoutesFromControllers = (router, controllers) => {
     const loadController = (controller, parentPaths = []) => {
         for (const key in controller) {
             const value = controller[key];
-            if (typeof value === 'function') {
-                loadHandler(controller, parentPaths, key);
-            } else if (typeof value === 'object' && value !== null) {
-                loadController(value, [...parentPaths, key]);
-            }
+            loadHandler(value, [...parentPaths, key]);
         }
     };
 
