@@ -3,16 +3,15 @@ import { stringToRegExp, isSourceRegexLiteral, getFunctionParams } from "./utils
 const createNode = () => ({
     children: new Map(),
     handler: null,
-    mode: 'static',
+    mode: 'none',
     regex: null
 });
 
+const rootRouter = createNode();
 const createRouter = () => {
-    const root = createNode();
-
     const match = (url) => {
         const segments = url.split('/').filter(Boolean);
-        let currentNode = root;
+        let currentNode = rootRouter;
         const params = [];
         let matchedPath = [];
 
@@ -20,10 +19,10 @@ const createRouter = () => {
             let foundNode = null;
             if (currentNode.children.has(seg)) {
                 const potentialNode = currentNode.children.get(seg);
-                if (potentialNode.mode === 'static') {
-                    foundNode = potentialNode;
-                    matchedPath.push(seg);
-                }
+                //if (potentialNode.mode === 'static') {
+                foundNode = potentialNode;
+                matchedPath.push(seg);
+                //}
             }
             if (!foundNode) {
                 for (const [key, childNode] of currentNode.children) {
@@ -48,7 +47,7 @@ const createRouter = () => {
         return null;
     };
 
-    return { root, match };
+    return { match };
 };
 
 function getRawBody(req) {
@@ -73,112 +72,152 @@ function getRawBody(req) {
     });
 }
 
-const makeArgs = (params) => async (ctx, req, res, routeParams) => {
+const makeArgs = (params, components) => (ctx, routeParams, next) => {
     const args = [];
     for (const param of params) {
-        if (param === 'req') args.push(req);
-        else if (param === 'res') args.push(res);
-        else if (param === 'path') args.push(req.url);
+        if (param === 'next') args.push(
+            next
+        );
+        else if (param === 'req') args.push(ctx.req);
+        else if (param === 'res') args.push(ctx.res);
+        else if (param === 'path') args.push(ctx.req.url);
         else if (param === 'body') {
-            let body = await getRawBody(req);
-            const contentType = req.headers['content-type'];
-            if (contentType === 'application/json') {
-                body = JSON.parse(body);
-            }
-            args.push(body);
+            args.push(async () => {
+                let body = await getRawBody(ctx.req);
+                const contentType = ctx.req.headers['content-type'];
+                if (contentType === 'application/json') {
+                    body = JSON.parse(body);
+                }
+                return body;
+            });
         }
         else if (param === 'slug') {
-            const paths = req.url.split('/');
+            const paths = ctx.req.url.split('/');
             args.push(paths[paths.length - 1]);
         } else if (param === 'params') args.push(routeParams);
-        else if (param === 'ctx') args.push(ctx);
-        else if (param === 'handler') args.push(ctx);
-        else if (param === 'middleware') args.push(ctx);
-        else args.push(null);
+        else if (param === 'ctx' || param === 'handler' || param === 'middleware') args.push(ctx);
+        else {
+            if (components.has(param)) {
+                args.push(components.get(param));
+            }
+            args.push(null);
+        }
     }
     return args;
 };
 
-const loadHandlerFn = (handler, handleFn) => {
+const loadHandlerFn = (handleFn, components, middlewares) => {
+    let handler = {}
     const params = getFunctionParams(handleFn);
-    const args = makeArgs(params);
+    const args = makeArgs(params, components);
 
     const isMiddleware = params.find(e => e === 'middleware');
-
-    if (isMiddleware) {
-        if (!handler.fn) {
-            if (!handler.beforeMiddleware) {
-                handler.beforeMiddleware = []
-            }
-            handler.beforeMiddleware.push({ fn: handleFn, args });
-        } else {
-            if (!handler.afterMiddleware) {
-                handler.afterMiddleware = []
-            }
-            handler.afterMiddleware.push({ fn: handleFn, args });
-        }
-    } else {
-        if (handler.fn) {
-            throw new Error('handler.fn already exist');
-        }
-
-        handler.fn = handleFn;
-        handler.args = args;
-    }
+    handler.fn = handleFn;
+    handler.args = args;
+    handler.middlewares = middlewares;
+    handler.isMiddleware = isMiddleware;
 
     return handler;
 }
 
-const loadRoutesFromControllers = (router, controllers) => {
-    const loadHandler = (handleFn, parentPaths) => {
-        let handler = {};
-
+const loadRoutesFromControllers = (controllers, components) => {
+    const loadHandler = (router, handleFn, parentPaths, key, parentMiddlewares) => {
         const fullPathSegments = parentPaths.filter(Boolean);
 
         if (Array.isArray(handleFn)) {
-            for (const fn of handleFn) {
-                loadHandlerFn(handler, fn)
-            }
-        } else if (typeof handleFn === 'function') {
-            loadHandlerFn(handler, handleFn)
-        } else if (typeof handleFn === 'object' && handleFn !== null) {
-            for (const key in handleFn) {
-                loadHandler(handleFn[key], [...parentPaths, key]);
-            }
-        }
+            let tmpRouter = router;
+            if (key !== 'index') {
+                let child = createNode();
+                if (isSourceRegexLiteral(key)) {
+                    child.mode = 'regex';
+                    child.regex = key;
+                } else {
+                    child.mode = 'static';
+                }
 
-        if (handler.fn) {
-            let tmpRouter = router.root;
-            for (const segment of fullPathSegments) {
-                if (segment !== 'index') {
-                    let child = tmpRouter.children.get(segment);
-                    if (!child) {
-                        child = createNode();
-                        tmpRouter.children.set(segment, child);
-                        if (isSourceRegexLiteral(segment)) {
-                            child.mode = 'regex';
-                            child.regex = segment;
+                tmpRouter = child;
+            }
+            
+            let targetHandler = {};
+
+            let middlewares = parentMiddlewares;
+            for (const fn of handleFn) {
+                if (typeof fn === 'function') {
+                    const handler = loadHandlerFn(fn, components);
+
+                    if (handler.fn) {
+                        if (!handler.isMiddleware) {
+                            targetHandler.fn = handler.fn;
+                            targetHandler.args = handler.args;
+                            targetHandler.middlewares = middlewares;
+                            tmpRouter.handler = targetHandler
+                        } else {
+                            middlewares.push(handler);
                         }
                     }
-                    tmpRouter = child;
+                } else if (typeof fn === 'object' && fn !== null) {
+                    for (const innerKey in fn) {
+                        let handler = loadHandler(tmpRouter, fn[innerKey], [...parentPaths, key], innerKey, [...middlewares]);
+                        tmpRouter.children.set(innerKey, handler);
+                    }
+
+                    router.children.set(key, tmpRouter);
                 }
             }
-            if (!tmpRouter.mode) tmpRouter.mode = 'static';
-            tmpRouter.handler = handler;
-            console.log(`Added path /${fullPathSegments.join('/')} [${tmpRouter.mode}]`);
+
+            router.children.set(key, tmpRouter);
+            console.log(`Added path /${fullPathSegments.join('/')}/${key} [${tmpRouter.mode}]`);
+
+            return tmpRouter;
+        } else if (typeof handleFn === 'function') {
+            const handler = loadHandlerFn(handleFn, components, parentMiddlewares)
+
+            if (handler.fn) {
+                let tmpRouter = router;
+                if (key !== 'index') {
+                    let child = createNode();
+                    if (isSourceRegexLiteral(key)) {
+                        child.mode = 'regex';
+                        child.regex = key;
+                    } else {
+                        child.mode = 'static';
+                    }
+
+                    tmpRouter = child;
+                }
+                tmpRouter.handler = handler;
+                router.children.set(key, tmpRouter);
+                console.log(`Added path /${fullPathSegments.join('/')}/${key} [${tmpRouter.mode}]`);
+                return tmpRouter;
+            }
+        } else if (typeof handleFn === 'object' && handleFn !== null) {
+            const targetRouter = createNode();
+            for (const key in handleFn) {
+                let handler = loadHandler(targetRouter, handleFn[key], parentPaths, key, parentMiddlewares);
+                targetRouter.children.set(key, handler);
+            }
+            router.children.set(key, targetRouter);
+
+            return targetRouter;
         }
     };
 
-    const loadController = (controller, parentPaths = []) => {
+    const loadController = (controller, parentPath) => {
+        const router = createNode();
         for (const key in controller) {
             const value = controller[key];
-            loadHandler(value, [...parentPaths, key]);
+            const handler = loadHandler(router, value, [parentPath], key, []);
+
+            router.children.set(parentPath, handler);
         }
+
+        return router;
     };
 
     for (const key in controllers) {
-        loadController(controllers[key], [key]);
+        const router = loadController(controllers[key], key)
+        rootRouter.children.set(key, router);
     }
 };
 
-export { createRouter, loadRoutesFromControllers };
+export { createRouter, rootRouter, loadRoutesFromControllers };
