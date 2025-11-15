@@ -1,5 +1,5 @@
 import loader from "./src/loader.js";
-import { createRouter, rootRouter, loadRoutesFromControllers } from "./src/router.js";
+import { buildRouter } from "./src/router.js";
 import { createServer, startServer } from "./src/server.js";
 import mime_type from "./src/mime-type.js";
 import { requestHeader } from "./src/http-headers.js";
@@ -154,7 +154,9 @@ const requestListener = (router) => async (req, res) => {
         if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
             proxyRes.statusCode = 200;
         }
-        proxyRes.end(String(responseBody));
+        if (!proxyRes.__status.responseSent) {
+            proxyRes.end(String(responseBody));
+        }
 
         if (handler.afterMiddleware) {
             for (const middleware of handler.afterMiddleware) {
@@ -184,9 +186,9 @@ export function Ice(options = {}) {
 
     async function start(controllersPath = './app/controllers') {
         const controllers = await loader(controllersPath);
-        loadRoutesFromControllers(controllers, components);
+        const rootRouter = buildRouter(controllers, components)
 
-        const server = createServer(requestListener(createRouter()));
+        const server = createServer(requestListener(rootRouter));
         await startServer(server, port, hostname);
         return server;
     }
