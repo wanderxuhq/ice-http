@@ -126,9 +126,9 @@ const buildRouteTree = (controllers, components) => {
             }
         } else if (typeof handleFn === 'object' && handleFn !== null) {
             const targetRouter = createNode();
-            for (const key in handleFn) {
-                let handler = registerRoute(targetRouter, handleFn[key], parentPaths, key, parentMiddlewares);
-                targetRouter.children.set(key, handler);
+            for (const innerKey in handleFn) {
+                let handler = registerRoute(targetRouter, handleFn[innerKey], [...parentPaths, key], innerKey, parentMiddlewares);
+                targetRouter.children.set(innerKey, handler);
             }
             router.children.set(key, targetRouter);
 
