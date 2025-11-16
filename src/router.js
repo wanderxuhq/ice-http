@@ -1,15 +1,51 @@
-import { stringToRegExp, isSourceRegexLiteral, getFunctionParams } from "./utils/ast.js";
+import { stringToRegExp, isSourceRegexLiteral, getFunctionParams, isSafeRegexPattern } from "./utils/ast.js";
 import { getRawBody } from "./utils/request.js";
 
-const createNode = () => ({
+const createNode = (snip) => ({
     children: new Map(),
     handler: null,
-    mode: 'none',
-    regex: null
+    key: snip.key,
+    mode: snip.mode,
+    regex: snip.pattern
 });
 
+const parsePathSnip = (snip) => {
+    let key = snip;
+    let pattern = null;
+    let mode = 'static';
+    if (snip.startsWith('[')) {
+        const keyStart = snip.indexOf('[') + 1;
+        const keyEnd = snip.indexOf(']')
+        key = snip.substring(keyStart, keyEnd);
+        if (keyEnd < snip.length) {
+            const hasPattern = snip[keyEnd + 1] === '(';
+            if (hasPattern) {
+                const patternStart = keyEnd + 2;
+                const patternEnd = snip.lastIndexOf(')');
+                if (patternEnd === -1) {
+                    throw new Error(`Syntax error for ${snip}`);
+                }
+
+                mode = 'regex';
+                pattern = snip.substring(patternStart, patternEnd);
+            } else {
+                mode = 'regex';
+                pattern = '/.+/';
+            }
+        }
+    }
+
+    return {
+        mode,
+        key,
+        pattern
+    }
+}
+
 const buildRouteTree = (controllers, components) => {
-    const rootRouter = createNode();
+    const rootRouter = createNode({
+        mode: 'none'
+    });
 
     const makeArgs = (params) => (ctx, routeParams, next) => {
         const args = [];
@@ -26,7 +62,11 @@ const buildRouteTree = (controllers, components) => {
                     let body = await getRawBody(ctx.req);
                     const contentType = ctx.req.headers['content-type'];
                     if (contentType === 'application/json') {
-                        body = JSON.parse(body);
+                        try {
+                            body = JSON.parse(body);
+                        } catch (e) {
+                            //TODO body cannot parsed
+                        }
                     }
                     return body;
                 });
@@ -37,10 +77,13 @@ const buildRouteTree = (controllers, components) => {
             } else if (param === 'params') args.push(routeParams);
             else if (param === 'ctx' || param === 'handler' || param === 'middleware') args.push(ctx);
             else {
-                if (components.has(param)) {
+                if (routeParams.has(param)) {
+                    args.push(routeParams.get(param));
+                } else if (components.has(param)) {
                     args.push(components.get(param));
+                } else {
+                    args.push(null);
                 }
-                args.push(null);
             }
         }
         return args;
@@ -60,24 +103,13 @@ const buildRouteTree = (controllers, components) => {
         return handler;
     }
 
-    const createAndConfigureRouteNode = (key) => {
-        const node = createNode();
-        if (isSourceRegexLiteral(key)) {
-            node.mode = 'regex';
-            node.regex = key;
-        } else {
-            node.mode = 'static';
-        }
-        return node;
-    };
-
-    const registerRoute = (router, handleFn, parentPaths, key, parentMiddlewares) => {
+    const registerRoute = (router, handleFn, parentPaths, snipObj, parentMiddlewares) => {
         const fullPathSegments = parentPaths.filter(Boolean);
 
         if (Array.isArray(handleFn)) {
             let tmpRouter = router;
-            if (key !== 'index') {
-                tmpRouter = createAndConfigureRouteNode(key);
+            if (snipObj.key !== 'index') {
+                tmpRouter = createNode(snipObj)
             }
 
             let targetHandler = {};
@@ -99,16 +131,17 @@ const buildRouteTree = (controllers, components) => {
                     }
                 } else if (typeof fn === 'object' && fn !== null) {
                     for (const innerKey in fn) {
-                        let handler = registerRoute(tmpRouter, fn[innerKey], [...parentPaths, key], innerKey, [...middlewares]);
-                        tmpRouter.children.set(innerKey, handler);
+                        const innerKeySnipObj = parsePathSnip(innerKey);
+                        let handler = registerRoute(tmpRouter, fn[innerKey], [...parentPaths, snipObj], innerKeySnipObj, [...middlewares]);
+                        tmpRouter.children.set(innerKeySnipObj.key, handler);
                     }
 
-                    router.children.set(key, tmpRouter);
+                    router.children.set(snipObj.key, tmpRouter);
                 }
             }
 
-            router.children.set(key, tmpRouter);
-            console.log(`Added path /${fullPathSegments.join('/')}/${key} [${tmpRouter.mode}]`);
+            //router.children.set(snipObj.key, tmpRouter);
+            console.log(`Added path /${fullPathSegments.map(e => e.key).join('/')}/${snipObj.key} [${tmpRouter.mode}]`);
 
             return tmpRouter;
         } else if (typeof handleFn === 'function') {
@@ -116,40 +149,43 @@ const buildRouteTree = (controllers, components) => {
 
             if (handler.fn) {
                 let tmpRouter = router;
-                if (key !== 'index') {
-                    tmpRouter = createAndConfigureRouteNode(key);
+                if (snipObj.key !== 'index') {
+                    tmpRouter = createNode(snipObj)
                 }
                 tmpRouter.handler = handler;
-                router.children.set(key, tmpRouter);
-                console.log(`Added path /${fullPathSegments.join('/')}/${key} [${tmpRouter.mode}]`);
+                //router.children.set(snipObj.key, tmpRouter);
+                console.log(`Added path /${fullPathSegments.map(e => e.key).join('/')}/${snipObj.key} [${tmpRouter.mode}]`);
                 return tmpRouter;
             }
         } else if (typeof handleFn === 'object' && handleFn !== null) {
-            const targetRouter = createNode();
+            const targetRouter = createNode(snipObj);
             for (const innerKey in handleFn) {
-                let handler = registerRoute(targetRouter, handleFn[innerKey], [...parentPaths, key], innerKey, parentMiddlewares);
-                targetRouter.children.set(innerKey, handler);
+                const innerKeySnipObj = parsePathSnip(innerKey);
+                let handler = registerRoute(targetRouter, handleFn[innerKey], [...parentPaths, snipObj], innerKeySnipObj, parentMiddlewares);
+                targetRouter.children.set(innerKeySnipObj.key, handler);
             }
-            router.children.set(key, targetRouter);
 
             return targetRouter;
         }
     };
 
     const registerRoutesFromController = (controller, parentPath) => {
-        const router = createNode();
-        for (const key in controller) {
-            const value = controller[key];
-            const handler = registerRoute(router, value, [parentPath], key, []);
+        const router = createNode({
+            mode: 'none'
+        });
+        for (const snip in controller) {
+            const value = controller[snip];
+            const snipObj = parsePathSnip(snip);
+            const handler = registerRoute(router, value, [parentPath], snipObj, []);
 
-            router.children.set(parentPath, handler);
+            router.children.set(snipObj.key, handler);
         }
 
         return router;
     };
 
     for (const key in controllers) {
-        const router = registerRoutesFromController(controllers[key], key)
+        const router = registerRoutesFromController(controllers[key], { key, mode: 'static' })
         rootRouter.children.set(key, router);
     }
 
@@ -162,7 +198,7 @@ const buildRouter = (controllers, components) => {
     const match = (url) => {
         const segments = url.split('/').filter(Boolean);
         let currentNode = rootRouter;
-        const params = [];
+        const params = new Map();
         let matchedPath = [];
 
         for (const seg of segments) {
@@ -176,7 +212,8 @@ const buildRouter = (controllers, components) => {
                 for (const [key, childNode] of currentNode.children) {
                     if (childNode.mode === 'regex' && seg.match(stringToRegExp(childNode.regex))) {
                         foundNode = childNode;
-                        params.push(seg);
+                        //TODO params
+                        params.set(childNode.key, seg);
                         matchedPath.push(key);
                         break;
                     }
@@ -194,8 +231,6 @@ const buildRouter = (controllers, components) => {
         }
         return null;
     };
-    //Register controller to router
-
 
     return { match };
 };

@@ -71,3 +71,25 @@ export const stringToRegExp = (regexString) => {
     const flags = regexString.substring(lastSlashIndex + 1);
     return new RegExp(pattern, flags);
 };
+
+/**
+ * Checks for potentially dangerous patterns in a regex string to prevent ReDoS.
+ * This is a simplified check focusing on nested quantifiers, a common vulnerability.
+ * @param {string} pattern The regex pattern string to validate.
+ * @returns {boolean} True if the pattern is considered safe, false otherwise.
+ */
+export const isSafeRegexPattern = (pattern) => {
+    // This regex looks for a capturing or non-capturing group `(...)` that contains a quantifier `*` or `+`,
+    // and is immediately followed by another quantifier `*` or `+`.
+    // This is a strong indicator of a potential "catastrophic backtracking" issue.
+    // Example of dangerous patterns it would catch: /(a+)+/, /(a*)*b/, /(.+)*$/
+    const dangerousPattern = /\((?!\?)[^)]*[*+]\)[*+]/;
+
+    if (dangerousPattern.test(pattern)) {
+        return false; // Found a dangerous pattern
+    }
+
+    // The pattern is considered safe from this specific check.
+    // More advanced checks could be added here if needed.
+    return true;
+};

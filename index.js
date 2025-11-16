@@ -112,65 +112,69 @@ const requestListener = (router) => async (req, res) => {
     };
 
     if (route && route.handler) {
-        const { handler, params } = route;
-        let result;
-        if (handler.middlewares) {
-            const next = makeNext(handler, 0, ctx, params);
-            if (isAsyncFunction(next)) {
-                await next();
-            } else {
-                next();
-            }
-            result = ctx.result;
-        } else {
-            const args = await handler.args(ctx, req, proxyRes, params);
-            result = await handler.fn(...args);
-        }
-        
-        let responseBody = result;
-        if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
-            proxyRes.setHeader(requestHeader.contentType, mime_type.TEXT_PLAIN + '; charset=utf-8');
-        }
-
-        if (isPayload(result)) {
-            if (result.contentType === mime_type.APPLICATION_JSON) {
-                responseBody = JSON.stringify(result.raw);
-                if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
-                    proxyRes.setHeader(requestHeader.contentType, result.contentType + "; charset=utf-8");
-                }
-            } else if (result.contentType === mime_type.TEXT_HTML) {
-                responseBody = result.raw;
-                if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
-                    proxyRes.setHeader(requestHeader.contentType, result.contentType + "; charset=utf-8");
-                }
-            }
-        } else if (typeof result === 'object') {
-            responseBody = JSON.stringify(result);
-            if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
-                proxyRes.setHeader(requestHeader.contentType, mime_type.APPLICATION_JSON + '; charset=utf-8');
-            }
-        }
-
-        if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
-            proxyRes.statusCode = 200;
-        }
-        if (!proxyRes.__status.responseSent) {
-            proxyRes.end(String(responseBody));
-        }
-
-        if (handler.afterMiddleware) {
-            for (const middleware of handler.afterMiddleware) {
-                const middlewareResult = await middleware.fn(... (await middleware.args(ctx, req, proxyRes, params)));
-                if (middlewareResult === true) {
-                    // continue
-                } else if (middlewareResult === false) {
-                    return;
+        try {
+            const { handler, params } = route;
+            let result;
+            if (handler.middlewares) {
+                const next = makeNext(handler, 0, ctx, params);
+                if (isAsyncFunction(next)) {
+                    await next();
                 } else {
-                    if (proxyRes.__status.responseSent) {
+                    next();
+                }
+                result = ctx.result;
+            } else {
+                const args = await handler.args(ctx, req, proxyRes, params);
+                result = await handler.fn(...args);
+            }
+
+            let responseBody = result;
+            if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
+                proxyRes.setHeader(requestHeader.contentType, mime_type.TEXT_PLAIN + '; charset=utf-8');
+            }
+
+            if (isPayload(result)) {
+                if (result.contentType === mime_type.APPLICATION_JSON) {
+                    responseBody = JSON.stringify(result.raw);
+                    if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
+                        proxyRes.setHeader(requestHeader.contentType, result.contentType + "; charset=utf-8");
+                    }
+                } else if (result.contentType === mime_type.TEXT_HTML) {
+                    responseBody = result.raw;
+                    if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
+                        proxyRes.setHeader(requestHeader.contentType, result.contentType + "; charset=utf-8");
+                    }
+                }
+            } else if (typeof result === 'object') {
+                responseBody = JSON.stringify(result);
+                if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
+                    proxyRes.setHeader(requestHeader.contentType, mime_type.APPLICATION_JSON + '; charset=utf-8');
+                }
+            }
+
+            if (!proxyRes.__status.responseWrite && !proxyRes.__status.responseSent) {
+                proxyRes.statusCode = 200;
+            }
+            if (!proxyRes.__status.responseSent) {
+                proxyRes.end(String(responseBody));
+            }
+
+            if (handler.afterMiddleware) {
+                for (const middleware of handler.afterMiddleware) {
+                    const middlewareResult = await middleware.fn(... (await middleware.args(ctx, req, proxyRes, params)));
+                    if (middlewareResult === true) {
+                        // continue
+                    } else if (middlewareResult === false) {
                         return;
+                    } else {
+                        if (proxyRes.__status.responseSent) {
+                            return;
+                        }
                     }
                 }
             }
+        } catch (e) {
+            console.error(e);
         }
     } else {
         res.statusCode = 404;
