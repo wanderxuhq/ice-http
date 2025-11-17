@@ -218,3 +218,5 @@ const isPayload = (obj) => {
 
 export function html(raw) { return createPayload(mime_type.TEXT_HTML, raw); }
 export function json(raw) { return createPayload(mime_type.APPLICATION_JSON, raw); }
+
+export const exclude = Symbol();

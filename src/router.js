@@ -1,3 +1,4 @@
+import { exclude } from "../index.js";
 import { stringToRegExp, isSourceRegexLiteral, getFunctionParams, isSafeRegexPattern } from "./utils/ast.js";
 import { getRawBody } from "./utils/request.js";
 
@@ -89,7 +90,7 @@ const buildRouteTree = (controllers, components) => {
         return args;
     };
 
-    const createHandler = (handleFn, middlewares) => {
+    const createHandler = (handleFn) => {
         let handler = {}
         const params = getFunctionParams(handleFn);
         const args = makeArgs(params);
@@ -97,7 +98,6 @@ const buildRouteTree = (controllers, components) => {
         const isMiddleware = params.find(e => e === 'middleware');
         handler.fn = handleFn;
         handler.args = args;
-        handler.middlewares = middlewares;
         handler.isMiddleware = isMiddleware;
 
         return handler;
@@ -145,13 +145,14 @@ const buildRouteTree = (controllers, components) => {
 
             return tmpRouter;
         } else if (typeof handleFn === 'function') {
-            const handler = createHandler(handleFn, parentMiddlewares)
+            const handler = createHandler(handleFn)
 
             if (handler.fn) {
                 let tmpRouter = router;
                 if (snipObj.key !== 'index') {
                     tmpRouter = createNode(snipObj)
                 }
+                handler.middlewares = parentMiddlewares;
                 tmpRouter.handler = handler;
                 //router.children.set(snipObj.key, tmpRouter);
                 console.log(`Added path /${fullPathSegments.map(e => e.key).join('/')}/${snipObj.key} [${tmpRouter.mode}]`);
@@ -159,9 +160,14 @@ const buildRouteTree = (controllers, components) => {
             }
         } else if (typeof handleFn === 'object' && handleFn !== null) {
             const targetRouter = createNode(snipObj);
+            let middlewares = parentMiddlewares;
+            const excludeMiddlewares = handleFn[exclude];
+            if (excludeMiddlewares) {
+                middlewares = middlewares.filter(m => excludeMiddlewares.find(em => m === em));
+            }
             for (const innerKey in handleFn) {
                 const innerKeySnipObj = parsePathSnip(innerKey);
-                let handler = registerRoute(targetRouter, handleFn[innerKey], [...parentPaths, snipObj], innerKeySnipObj, parentMiddlewares);
+                let handler = registerRoute(targetRouter, handleFn[innerKey], [...parentPaths, snipObj], innerKeySnipObj, middlewares);
                 targetRouter.children.set(innerKeySnipObj.key, handler);
             }
 
@@ -176,7 +182,7 @@ const buildRouteTree = (controllers, components) => {
         for (const snip in controller) {
             const value = controller[snip];
             const snipObj = parsePathSnip(snip);
-            const handler = registerRoute(router, value, [parentPath], snipObj, []);
+            const handler = registerRoute(router, value, [parentPath], snipObj, [/* TODO default middlewares */]);
 
             router.children.set(snipObj.key, handler);
         }
