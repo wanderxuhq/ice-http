@@ -59,14 +59,12 @@ function createResponseProxy(nativeRes) {
  * @returns {boolean} - 如果是 async function 则返回 true。
  */
 function isAsyncFunction(func) {
-    // 1. 检查类型是否为 'function'
     if (typeof func !== 'function') {
         return false;
     }
-
-    // 2. 检查其构造器的名称
-    // Async functions 实例的构造器是 AsyncFunction
-    return func.constructor.name === 'AsyncFunction';
+    // A more robust way to check for async functions
+    // It also handles functions that return a Promise, which is good enough for our use case
+    return func.constructor.name === 'AsyncFunction' || (func() instanceof Promise);
 }
 
 const makeNext = (handler, index, ctx, params) => {
@@ -175,6 +173,17 @@ const requestListener = (router) => async (req, res) => {
             }
         } catch (e) {
             console.error(e);
+            if (!proxyRes.__status.responseSent) {
+                if (e.message === 'Request body too large') {
+                    proxyRes.statusCode = 413;
+                    proxyRes.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                    proxyRes.end('Payload Too Large');
+                } else {
+                    proxyRes.statusCode = 500;
+                    proxyRes.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                    proxyRes.end('Internal Server Error');
+                }
+            }
         }
     } else {
         res.statusCode = 404;

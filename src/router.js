@@ -1,6 +1,7 @@
 import { exclude } from "../index.js";
 import { stringToRegExp, isSourceRegexLiteral, getFunctionParams, isSafeRegexPattern } from "./utils/ast.js";
 import { getRawBody } from "./utils/request.js";
+import safeRegex from "safe-regex";
 
 const createNode = (snip) => ({
     children: new Map(),
@@ -29,6 +30,10 @@ const parsePathSnip = (snip) => {
 
                 mode = 'regex';
                 pattern = snip.substring(patternStart, patternEnd);
+
+                if (!safeRegex(pattern)) {
+                    console.warn(`Unsafe regex pattern detected: ${pattern}`);
+                }
             } else {
                 mode = 'regex';
                 pattern = '/.+/';
@@ -60,13 +65,16 @@ const buildRouteTree = (controllers, components) => {
             else if (param === 'path') args.push(ctx.req.url);
             else if (param === 'body') {
                 args.push(async () => {
-                    let body = await getRawBody(ctx.req);
+                    let body = await getRawBody(ctx.req); // Default maxLength is 1MB
                     const contentType = ctx.req.headers['content-type'];
                     if (contentType === 'application/json') {
                         try {
                             body = JSON.parse(body);
                         } catch (e) {
-                            //TODO body cannot parsed
+                            ctx.res.statusCode = 400;
+                            ctx.res.setHeader('Content-Type', 'application/json');
+                            ctx.res.end(JSON.stringify({ error: 'Invalid JSON' }));
+                            return; // Stop further processing
                         }
                     }
                     return body;
@@ -216,12 +224,14 @@ const buildRouter = (controllers, components) => {
             }
             if (!foundNode) {
                 for (const [key, childNode] of currentNode.children) {
-                    if (childNode.mode === 'regex' && seg.match(stringToRegExp(childNode.regex))) {
-                        foundNode = childNode;
-                        //TODO params
-                        params.set(childNode.key, seg);
-                        matchedPath.push(key);
-                        break;
+                    if (childNode.mode === 'regex') {
+                        if (seg.match(stringToRegExp(childNode.regex))) {
+                            foundNode = childNode;
+                            //TODO params
+                            params.set(childNode.key, seg);
+                            matchedPath.push(key);
+                            break;
+                        }
                     }
                 }
             }
