@@ -64,18 +64,27 @@ const buildRouteTree = (controllers, components) => {
             else if (param === 'method') args.push(ctx.req.method);
             else if (param === 'path') args.push(ctx.req.url);
             else if (param === 'body') {
-                args.push(async () => {
-                    let body = await getRawBody(ctx.req); // Default maxLength is 1MB
+                args.push(async (length, onPayloadTooLarge) => {
+                    let body;
+                    try {
+                        body = await getRawBody(ctx.req, length);
+                    } catch (e) {
+                        onPayloadTooLarge?.()
+                        ctx.req.destroy();
+                        throw e;
+                    }
                     const contentType = ctx.req.headers['content-type'];
                     if (contentType === 'application/json') {
                         try {
-                            body = JSON.parse(body);
+                            body = JSON.parse(body.toString('eutf8'));
                         } catch (e) {
                             ctx.res.statusCode = 400;
                             ctx.res.setHeader('Content-Type', 'application/json');
                             ctx.res.end(JSON.stringify({ error: 'Invalid JSON' }));
                             return; // Stop further processing
                         }
+                    } else if (contentType === 'text/plain') {
+                        body = body.toString('utf8');
                     }
                     return body;
                 });

@@ -156,33 +156,12 @@ const requestListener = (router) => async (req, res) => {
             if (!proxyRes.__status.responseSent) {
                 proxyRes.end(String(responseBody));
             }
-
-            if (handler.afterMiddleware) {
-                for (const middleware of handler.afterMiddleware) {
-                    const middlewareResult = await middleware.fn(... (await middleware.args(ctx, req, proxyRes, params)));
-                    if (middlewareResult === true) {
-                        // continue
-                    } else if (middlewareResult === false) {
-                        return;
-                    } else {
-                        if (proxyRes.__status.responseSent) {
-                            return;
-                        }
-                    }
-                }
-            }
         } catch (e) {
             console.error(e);
             if (!proxyRes.__status.responseSent) {
-                if (e.message === 'Request body too large') {
-                    proxyRes.statusCode = 413;
-                    proxyRes.setHeader('Content-Type', 'text/plain; charset=utf-8');
-                    proxyRes.end('Payload Too Large');
-                } else {
-                    proxyRes.statusCode = 500;
-                    proxyRes.setHeader('Content-Type', 'text/plain; charset=utf-8');
-                    proxyRes.end('Internal Server Error');
-                }
+                proxyRes.statusCode = 500;
+                proxyRes.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                proxyRes.end('Internal Server Error');
             }
         }
     } else {

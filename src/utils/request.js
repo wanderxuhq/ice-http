@@ -1,4 +1,7 @@
-function getRawBody(req, maxLength = 1024 * 1024) { // Default to 1MB
+const getRawBody = (req, maxLength) => {
+    const stackLines = new Error('Request body too large').stack.split('\n');
+    const capturedStack = stackLines.slice(3).join('\n'); // 2. 去掉前3行
+
     return new Promise((resolve, reject) => {
         const chunks = [];
         let receivedLength = 0;
@@ -8,20 +11,21 @@ function getRawBody(req, maxLength = 1024 * 1024) { // Default to 1MB
         });
 
         req.on('data', (chunk) => {
-            receivedLength += chunk.length;
-
-            if (receivedLength > maxLength) {
-                req.destroy();
-                reject(new Error('Request body too large'));
-                return;
+            if (typeof maxLength === 'number') {
+                receivedLength += chunk.length;
+                if (receivedLength > maxLength) {
+                    const err = new Error('Request body too large');
+                    err.stack = `${err.name}: ${err.message}\n${capturedStack}`;
+                    reject(err);
+                    return;
+                }
             }
             chunks.push(chunk);
         });
 
         req.on('end', () => {
             const rawBodyBuffer = Buffer.concat(chunks);
-            const rawBodyString = rawBodyBuffer.toString('utf8');
-            resolve(rawBodyString);
+            resolve(rawBodyBuffer);
         });
     });
 }
